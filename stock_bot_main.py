@@ -10,9 +10,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
+# 從 Render 或本地的環境變數中安全讀取，絕不在程式碼中明文寫出
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# 直接將正確的 Chat ID 寫死，徹底解決抓不到對話或環境變數讀取失敗的問題
-TELEGRAM_CHAT_ID = "8791940051"
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 @app.route("/")
 def home():
@@ -24,8 +24,8 @@ def ping():
 
 @app.route("/run")
 def run_picker():
-    if not TELEGRAM_BOT_TOKEN:
-        return jsonify({"status": "error", "message": "Telegram Bot Token not configured."}), 500
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return jsonify({"status": "error", "message": "Telegram Bot Token or Chat ID not configured in environment variables."}), 500
 
     try:
         stock_list = ["2330.TW", "2317.TW", "2454.TW", "2308.TW"]
@@ -46,7 +46,6 @@ def run_picker():
         else:
             msg = "📊 【今日台股選股清單】\n\n今日無符合條件的股票。"
 
-        # 使用 requests 直接發送 Telegram 訊息給指定的 Chat ID
         telegram_api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         resp = requests.post(telegram_api_url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
         
