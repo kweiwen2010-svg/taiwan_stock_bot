@@ -13,7 +13,6 @@ app = Flask(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 設定路徑（確保雲端與本地皆能自動建立 data 資料夾）
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -23,7 +22,7 @@ VIRTUAL_PORTFOLIO_PATH = os.path.join(DATA_DIR, "virtual_portfolio.csv")
 
 @app.route("/")
 def home():
-    return "Taiwan Stock Bot with Persistent Tracker is running!", 200
+    return "Taiwan Stock Bot with Portfolio Summary is running!", 200
 
 @app.route("/run")
 def run_picker():
@@ -31,7 +30,6 @@ def run_picker():
         return jsonify({"status": "error", "message": "Telegram Token not configured."}), 500
 
     try:
-        # 動態從 stock_list.txt 讀取股票清單
         list_file_path = "stock_list.txt"
         raw_stock_list = []
         if os.path.exists(list_file_path):
@@ -67,7 +65,6 @@ def run_picker():
                     if ma5_val > ma20_val:
                         score += 15
                         
-                    # 評分 >= 85 判定為符合買進標準
                     signal_text = "符合買進標準" if score >= 85 else "區間觀望"
 
                     scored_results.append({
@@ -84,12 +81,9 @@ def run_picker():
         if df_results.empty:
             return jsonify({"status": "success", "message": "無資料可分析"}), 200
 
-        # 篩選今日符合買進標準的股票
         buy_signals = df_results[df_results["量化訊號"].str.contains("符合買進標準", na=False)].copy()
 
-        # -------------------------------------------------------------
-        # 1. 寫入歷史戰績庫 & 自動加入追蹤艙（舊有的不會被洗掉，只會疊加新標的）
-        # -------------------------------------------------------------
+        # 1. 寫入歷史與虛擬風控艙
         new_added_tickers = []
         if not buy_signals.empty:
             history_records = buy_signals.copy()
@@ -102,7 +96,6 @@ def run_picker():
                 combined_history = history_records
             combined_history.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
 
-            # 虛擬風控艙處理
             virtual_entries = pd.DataFrame({
                 "股票代號": buy_signals["股票代號"],
                 "買進日期": today_str,
@@ -112,8 +105,6 @@ def run_picker():
             if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
                 portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
                 existing_tickers = portfolio_df["股票代號"].astype(str).tolist()
-                
-                # 篩選出「還沒在追蹤清單中」的全新潛力股
                 new_to_add = virtual_entries[~virtual_entries["股票代號"].astype(str).isin(existing_tickers)]
                 
                 if not new_to_add.empty:
@@ -124,9 +115,7 @@ def run_picker():
                 new_added_tickers = virtual_entries["股票代號"].astype(str).tolist()
                 virtual_entries.to_csv(VIRTUAL_PORTFOLIO_PATH, index=False, encoding="utf-8-sig")
 
-        # -------------------------------------------------------------
-        # 2. 組合 Telegram 訊息（包含今日評分 + 追蹤清單損益）
-        # -------------------------------------------------------------
+        # 2. 組合 Telegram 訊息
         msg_lines = ["📊 【台股自選股綜合評分與追蹤清單】\n"]
         for _, item in df_results.iterrows():
             is_new = " 🆕【新加入追蹤】" if str(item['股票代號']) in new_added_tickers else ""
@@ -136,12 +125,18 @@ def run_picker():
                 f"   狀態: {item['量化訊號']}"
             )
         
-        # 讀取並計算「長期虛擬風控艙」中所有持股的即時損益
+        # 3. 計算投資組合整體表現
         if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
             portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
             if not portfolio_df.empty:
                 msg_lines.append("\n-----------------------------------")
-                msg_lines.append("📈 【長期追蹤風控艙即時績效】")
+                msg_lines.append("📈 【投資組合整體風控艙表現】")
+                
+                total_stocks = len(portfolio_df)
+                total_roi = 0
+                win_count = 0
+                portfolio_details = []
+
                 for _, row in portfolio_df.iterrows():
                     code = str(row["股票代號"])
                     buy_date = row["買進日期"]
@@ -154,22 +149,37 @@ def run_picker():
                             current_price = float(latest_val.iloc[0] if hasattr(latest_val, 'iloc') else latest_val)
                             
                             roi = ((current_price - buy_cost) / buy_cost) * 100
-                            sign = "+" if roi >= 0 else ""
+                            total_roi += roi
+                            if roi > 0:
+                                win_count += 1
                             
-                            msg_lines.append(
+                            sign = "+" if roi >= 0 else ""
+                            portfolio_details.append(
                                 f"▪️ {code}.TW | 買:{buy_date} ({buy_cost:.1f}) ➡️ 現:{current_price:.1f}\n"
-                                f"   累積損益: {sign}{roi:.2f}%"
+                                f"   損益: {sign}{roi:.2f}%"
                             )
                     except Exception as e:
                         print(f"計算追蹤標的 {code} 損益失敗: {e}")
 
+                # 計算整體平均表現
+                avg_roi = total_roi / total_stocks if total_stocks > 0 else 0
+                win_rate = (win_count / total_stocks) * 100 if total_stocks > 0 else 0
+                avg_sign = "+" if avg_roi >= 0 else ""
+
+                msg_lines.append(
+                    f"🌐 **整體總結**：追蹤中共 **{total_stocks}** 檔 | "
+                    f"勝率: **{win_rate:.1f}%** ({win_count}/{total_stocks})\n"
+                    f"📊 **組合平均報酬率**：**{avg_sign}{avg_roi:.2f}%**\n"
+                )
+                msg_lines.append("-----------------------------------")
+                msg_lines.extend(portfolio_details)
+
         full_msg = "\n".join(msg_lines)
 
-        # 發送 Telegram
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
                       json={"chat_id": TELEGRAM_CHAT_ID, "text": full_msg})
 
-        return jsonify({"status": "success", "message": "分析完成，追蹤清單與損益已同步更新。"}), 200
+        return jsonify({"status": "success", "message": "分析完成，整體投資組合表現已更新。"}), 200
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
