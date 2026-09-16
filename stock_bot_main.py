@@ -22,7 +22,7 @@ VIRTUAL_PORTFOLIO_PATH = os.path.join(DATA_DIR, "virtual_portfolio.csv")
 
 @app.route("/")
 def home():
-    return "Taiwan Stock Bot with Total Portfolio Tracking is running!", 200
+    return "Taiwan Stock Bot with Clean Portfolio Tracking is running!", 200
 
 @app.route("/run")
 def run_picker():
@@ -125,16 +125,17 @@ def run_picker():
                 f"   狀態: {item['量化訊號']}"
             )
         
-        # 3. 計算即時績效與「整體損益」
+        # 3. 計算即時績效與整體損益
         if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
             portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
             if not portfolio_df.empty:
                 portfolio_lines = ["\n-----------------------------------"]
-                portfolio_lines.append("📈 【長期追蹤風控艙即時績效】")
+                portfolio_lines.append("📈 【投資組合整體風控艙表現】")
                 
                 total_cost = 0.0
                 total_market_value = 0.0
                 item_count = 0
+                win_count = 0
 
                 for _, row in portfolio_df.iterrows():
                     code = str(row["股票代號"])
@@ -150,32 +151,31 @@ def run_picker():
                             roi = ((current_price - buy_cost) / buy_cost) * 100
                             sign = "+" if roi >= 0 else ""
                             
-                            # 假設每檔股票買進 1 張 (1000股) 來計算整體資金總損益
                             total_cost += buy_cost * 1000
                             total_market_value += current_price * 1000
                             item_count += 1
+                            if roi > 0:
+                                win_count += 1
                             
                             portfolio_lines.append(
                                 f"▪️ {code}.TW | 買:{buy_date} ({buy_cost:.1f}) ➡️ 現:{current_price:.1f}\n"
-                                f"   累積損益: {sign}{roi:.2f}%"
+                                f"   損益: {sign}{roi:.2f}%"
                             )
                     except Exception as e:
                         print(f"計算追蹤標的 {code} 損益失敗: {e}")
 
-                # 計算整體總損益
                 if total_cost > 0:
                     total_pnl = total_market_value - total_cost
                     total_roi = (total_pnl / total_cost) * 100
                     total_sign = "+" if total_pnl >= 0 else ""
+                    win_rate = (win_count / item_count) * 100 if item_count > 0 else 0.0
                     
                     summary_header = (
-                        f"💰 【整體風控艙總結】\n"
-                        f"   追蹤標的: {item_count} 檔\n"
-                        f"   整體平均報酬: {total_sign}{total_roi:.2f}%\n"
-                        f"   總估計損益金額: {total_sign}{total_pnl:,.1f} 元\n"
+                        f"🌐 ［整體總結］：追蹤中，共 {item_count} 檔 | 勝率：{win_rate:.1f}% ({win_count}/{item_count})\n"
+                        f"📊 ［組合平均報酬率］：{total_sign}{total_roi:.2f}%\n"
+                        f"💰 ［總估計損益金額］：{total_sign}{total_pnl:,.1f} 元\n"
                         f"-----------------------------------"
                     )
-                    # 將總結插入在標題下方
                     portfolio_lines.insert(1, summary_header)
 
                 msg_lines.extend(portfolio_lines)
