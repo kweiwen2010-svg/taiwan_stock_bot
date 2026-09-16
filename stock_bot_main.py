@@ -22,7 +22,7 @@ VIRTUAL_PORTFOLIO_PATH = os.path.join(DATA_DIR, "virtual_portfolio.csv")
 
 @app.route("/")
 def home():
-    return "Taiwan Stock Bot with Portfolio Summary is running!", 200
+    return "Taiwan Stock Bot with Total Portfolio Tracking is running!", 200
 
 @app.route("/run")
 def run_picker():
@@ -83,7 +83,7 @@ def run_picker():
 
         buy_signals = df_results[df_results["量化訊號"].str.contains("符合買進標準", na=False)].copy()
 
-        # 1. 寫入歷史與虛擬風控艙
+        # 1. 寫入歷史戰績庫 & 自動加入追蹤艙
         new_added_tickers = []
         if not buy_signals.empty:
             history_records = buy_signals.copy()
@@ -125,17 +125,16 @@ def run_picker():
                 f"   狀態: {item['量化訊號']}"
             )
         
-        # 3. 計算投資組合整體表現
+        # 3. 計算即時績效與「整體損益」
         if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
             portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
             if not portfolio_df.empty:
-                msg_lines.append("\n-----------------------------------")
-                msg_lines.append("📈 【投資組合整體風控艙表現】")
+                portfolio_lines = ["\n-----------------------------------"]
+                portfolio_lines.append("📈 【長期追蹤風控艙即時績效】")
                 
-                total_stocks = len(portfolio_df)
-                total_roi = 0
-                win_count = 0
-                portfolio_details = []
+                total_cost = 0.0
+                total_market_value = 0.0
+                item_count = 0
 
                 for _, row in portfolio_df.iterrows():
                     code = str(row["股票代號"])
@@ -149,37 +148,44 @@ def run_picker():
                             current_price = float(latest_val.iloc[0] if hasattr(latest_val, 'iloc') else latest_val)
                             
                             roi = ((current_price - buy_cost) / buy_cost) * 100
-                            total_roi += roi
-                            if roi > 0:
-                                win_count += 1
-                            
                             sign = "+" if roi >= 0 else ""
-                            portfolio_details.append(
+                            
+                            # 假設每檔股票買進 1 張 (1000股) 來計算整體資金總損益
+                            total_cost += buy_cost * 1000
+                            total_market_value += current_price * 1000
+                            item_count += 1
+                            
+                            portfolio_lines.append(
                                 f"▪️ {code}.TW | 買:{buy_date} ({buy_cost:.1f}) ➡️ 現:{current_price:.1f}\n"
-                                f"   損益: {sign}{roi:.2f}%"
+                                f"   累積損益: {sign}{roi:.2f}%"
                             )
                     except Exception as e:
                         print(f"計算追蹤標的 {code} 損益失敗: {e}")
 
-                # 計算整體平均表現
-                avg_roi = total_roi / total_stocks if total_stocks > 0 else 0
-                win_rate = (win_count / total_stocks) * 100 if total_stocks > 0 else 0
-                avg_sign = "+" if avg_roi >= 0 else ""
+                # 計算整體總損益
+                if total_cost > 0:
+                    total_pnl = total_market_value - total_cost
+                    total_roi = (total_pnl / total_cost) * 100
+                    total_sign = "+" if total_pnl >= 0 else ""
+                    
+                    summary_header = (
+                        f"💰 【整體風控艙總結】\n"
+                        f"   追蹤標的: {item_count} 檔\n"
+                        f"   整體平均報酬: {total_sign}{total_roi:.2f}%\n"
+                        f"   總估計損益金額: {total_sign}{total_pnl:,.1f} 元\n"
+                        f"-----------------------------------"
+                    )
+                    # 將總結插入在標題下方
+                    portfolio_lines.insert(1, summary_header)
 
-                msg_lines.append(
-                    f"🌐 **整體總結**：追蹤中共 **{total_stocks}** 檔 | "
-                    f"勝率: **{win_rate:.1f}%** ({win_count}/{total_stocks})\n"
-                    f"📊 **組合平均報酬率**：**{avg_sign}{avg_roi:.2f}%**\n"
-                )
-                msg_lines.append("-----------------------------------")
-                msg_lines.extend(portfolio_details)
+                msg_lines.extend(portfolio_lines)
 
         full_msg = "\n".join(msg_lines)
 
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
                       json={"chat_id": TELEGRAM_CHAT_ID, "text": full_msg})
 
-        return jsonify({"status": "success", "message": "分析完成，整體投資組合表現已更新。"}), 200
+        return jsonify({"status": "success", "message": "分析完成，整體損益已同步更新。"}), 200
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
