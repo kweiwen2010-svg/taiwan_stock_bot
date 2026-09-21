@@ -5,6 +5,7 @@ import yfinance as yf
 import requests
 from flask import Flask, jsonify
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 
 load_dotenv()
 
@@ -12,22 +13,26 @@ app = Flask(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# 建立資料庫連線引擎
+engine = create_engine(DATABASE_URL) if DATABASE_URL else None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-
 HISTORY_PATH = os.path.join(DATA_DIR, "signal_history.csv")
-VIRTUAL_PORTFOLIO_PATH = os.path.join(DATA_DIR, "virtual_portfolio.csv")
 
 @app.route("/")
 def home():
-    return "Taiwan Stock Bot with Permanent Portfolio Tracker is running!", 200
+    return "Taiwan Stock Bot with Supabase Persistent Tracker is running!", 200
 
 @app.route("/run")
 def run_picker():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return jsonify({"status": "error", "message": "Telegram Token not configured."}), 500
+    if not engine:
+        return jsonify({"status": "error", "message": "DATABASE_URL not configured for Supabase."}), 500
 
     try:
         list_file_path = "stock_list.txt"
@@ -83,7 +88,7 @@ def run_picker():
 
         buy_signals = df_results[df_results["量化訊號"].str.contains("符合買進標準", na=False)].copy()
 
-        # 1. 寫入歷史戰績庫
+        # 1. 寫入歷史戰績庫 (本地 CSV)
         new_added_tickers = []
         if not buy_signals.empty:
             history_records = buy_signals.copy()
@@ -96,29 +101,44 @@ def run_picker():
                 combined_history = history_records
             combined_history.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
 
-            # 2. 嚴格保護的虛擬風控艙寫入邏輯：舊股票永不刪除、只做累加與鎖定！
+            # 2. Supabase 雲端虛擬風控艙處理（永久保存，舊標的永不刪除）
+            table_name = "virtual_portfolio"
+            
+            # 檢查遠端資料表是否存在並讀取現有資料
+            portfolio_df = pd.DataFrame(columns=["股票代號", "買進日期", "買進成本"])
+            table_exists = False
+            try:
+                query = text(f"SELECT * FROM {table_name}")
+                with engine.connect() as conn:
+                    portfolio_df = pd.read_sql(query, conn)
+                table_exists = True
+            except Exception:
+                table_exists = False
+
+            if not portfolio_df.empty:
+                portfolio_df["股票代號"] = portfolio_df["股票代號"].astype(str)
+                existing_tickers = portfolio_df["股票代號"].tolist()
+            else:
+                existing_tickers = []
+
+            # 準備今天新符合條件的標的
             virtual_entries = pd.DataFrame({
                 "股票代號": buy_signals["股票代號"].astype(str),
                 "買進日期": today_str,
                 "買進成本": buy_signals["最新收盤價"]
             })
             
-            if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
-                portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
-                portfolio_df["股票代號"] = portfolio_df["股票代號"].astype(str)
-                existing_tickers = portfolio_df["股票代號"].tolist()
-                
-                # 篩選出「完全沒追蹤過的新股票」
-                new_to_add = virtual_entries[~virtual_entries["股票代號"].isin(existing_tickers)]
-                
-                if not new_to_add.empty:
-                    new_added_tickers = new_to_add["股票代號"].tolist()
-                    # 完美的永續結合：保留所有舊的 portfolio_df，只在後面 append 新的標的
-                    combined_portfolio = pd.concat([portfolio_df, new_to_add], ignore_index=True)
-                    combined_portfolio.to_csv(VIRTUAL_PORTFOLIO_PATH, index=False, encoding="utf-8-sig")
-            else:
+            # 篩選出「完全沒追蹤過的新股票」
+            new_to_add = virtual_entries[~virtual_entries["股票代號"].isin(existing_tickers)]
+            
+            if not new_to_add.empty:
+                new_added_tickers = new_to_add["股票代號"].tolist()
+                # 將新股票追加到雲端資料庫
+                new_to_add.to_sql(table_name, engine, if_exists="append", index=False)
+            elif not table_exists and not virtual_entries.empty:
+                # 若表格不存在且有初次資料，直接建立並寫入
                 new_added_tickers = virtual_entries["股票代號"].tolist()
-                virtual_entries.to_csv(VIRTUAL_PORTFOLIO_PATH, index=False, encoding="utf-8-sig")
+                virtual_entries.to_sql(table_name, engine, if_exists="replace", index=False)
 
         # 3. 組合 Telegram 訊息
         msg_lines = ["📊 【台股自選股綜合評分與追蹤清單】\n"]
@@ -130,12 +150,15 @@ def run_picker():
                 f"   狀態: {item['量化訊號']}"
             )
         
-        # 4. 計算即時績效與整體損益（讀取永續風控艙）
-        if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
-            portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
+        # 4. 從 Supabase 讀取即時績效與整體損益
+        try:
+            query = text("SELECT * FROM virtual_portfolio")
+            with engine.connect() as conn:
+                portfolio_df = pd.read_sql(query, conn)
+            
             if not portfolio_df.empty:
                 portfolio_lines = ["\n-----------------------------------"]
-                portfolio_lines.append("📈 【投資組合整體風控艙表現】")
+                portfolio_lines.append("📈 【投資組合整體風控艙表現 (Supabase雲端)】")
                 
                 total_cost = 0.0
                 total_market_value = 0.0
@@ -160,7 +183,6 @@ def run_picker():
                             total_market_value += current_price * 1000
                             item_count += 1
                             
-                            # 勝率定義：ROI >= 0（平盤或獲利皆計入勝率）
                             if roi >= 0:
                                 win_count += 1
                             
@@ -186,13 +208,15 @@ def run_picker():
                     portfolio_lines.insert(1, summary_header)
 
                 msg_lines.extend(portfolio_lines)
+        except Exception as e:
+            print(f"讀取 Supabase 虛擬風控艙失敗: {e}")
 
         full_msg = "\n".join(msg_lines)
 
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
                       json={"chat_id": TELEGRAM_CHAT_ID, "text": full_msg})
 
-        return jsonify({"status": "success", "message": "分析完成，風控艙永續追蹤防護已生效。"}), 200
+        return jsonify({"status": "success", "message": "分析完成，Supabase 雲端風控艙同步成功。"}), 200
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
