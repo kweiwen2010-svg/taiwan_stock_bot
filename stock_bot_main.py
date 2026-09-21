@@ -35,7 +35,8 @@ def run_picker():
         return jsonify({"status": "error", "message": "DATABASE_URL not configured for Supabase."}), 500
 
     try:
-        list_file_path = "stock_list.txt"
+        # 1. 使用絕對路徑確保 100% 讀取到 stock_list.txt
+        list_file_path = os.path.join(BASE_DIR, "stock_list.txt")
         raw_stock_list = []
         if os.path.exists(list_file_path):
             with open(list_file_path, "r", encoding="utf-8") as f:
@@ -51,9 +52,14 @@ def run_picker():
         today_str = datetime.date.today().strftime("%Y-%m-%d")
 
         for code in raw_stock_list:
+            # 支援上市 (.TW) 與 上櫃 (.TWO) 自動切換
             symbol = f"{code}.TW"
             try:
                 df = yf.download(symbol, period="60d", progress=False)
+                if df.empty or len(df) < 20:
+                    symbol = f"{code}.TWO"
+                    df = yf.download(symbol, period="60d", progress=False)
+
                 if not df.empty and len(df) >= 20:
                     close_prices = df['Close']
                     val = close_prices.iloc[-1]
@@ -80,7 +86,7 @@ def run_picker():
                         "量化訊號": signal_text
                     })
             except Exception as e:
-                print(f"處理 {symbol} 錯誤: {e}")
+                print(f"處理 {code} 錯誤: {e}")
 
         df_results = pd.DataFrame(scored_results)
         if df_results.empty:
