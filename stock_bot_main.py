@@ -177,7 +177,13 @@ def run_picker():
                     buy_cost = float(row["買進成本"])
                     
                     try:
-                        temp_df = yf.download(f"{code}.TW", period="5d", progress=False)
+                        # 支援雲端風控艙裡的代號自動判斷 TW 或 TWO
+                        temp_symbol = f"{code}.TW"
+                        temp_df = yf.download(temp_symbol, period="5d", progress=False)
+                        if temp_df.empty or len(temp_df) < 1:
+                            temp_symbol = f"{code}.TWO"
+                            temp_df = yf.download(temp_symbol, period="5d", progress=False)
+
                         if not temp_df.empty:
                             latest_val = temp_df['Close'].iloc[-1]
                             current_price = float(latest_val.iloc[0] if hasattr(latest_val, 'iloc') else latest_val)
@@ -193,7 +199,7 @@ def run_picker():
                                 win_count += 1
                             
                             portfolio_lines.append(
-                                f"▪️ {code}.TW | 買:{buy_date} ({buy_cost:.1f}) ➡️ 現:{current_price:.1f}\n"
+                                f"▪️ {temp_symbol} | 買:{buy_date} ({buy_cost:.1f}) ➡️ 現:{current_price:.1f}\n"
                                 f"   損益: {sign}{roi:.2f}%"
                             )
                     except Exception as e:
@@ -228,5 +234,5 @@ def run_picker():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
