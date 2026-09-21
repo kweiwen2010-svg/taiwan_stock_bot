@@ -22,7 +22,7 @@ VIRTUAL_PORTFOLIO_PATH = os.path.join(DATA_DIR, "virtual_portfolio.csv")
 
 @app.route("/")
 def home():
-    return "Taiwan Stock Bot with Fixed Portfolio Tracker is running!", 200
+    return "Taiwan Stock Bot with Permanent Portfolio Tracker is running!", 200
 
 @app.route("/run")
 def run_picker():
@@ -96,26 +96,28 @@ def run_picker():
                 combined_history = history_records
             combined_history.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
 
-            # 2. 虛擬風控艙處理（嚴格規定：已在追蹤中的舊標的，保留原始買進日期與成本不變！）
+            # 2. 嚴格保護的虛擬風控艙寫入邏輯：舊股票永不刪除、只做累加與鎖定！
             virtual_entries = pd.DataFrame({
-                "股票代號": buy_signals["股票代號"],
+                "股票代號": buy_signals["股票代號"].astype(str),
                 "買進日期": today_str,
                 "買進成本": buy_signals["最新收盤價"]
             })
             
             if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
                 portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
-                existing_tickers = portfolio_df["股票代號"].astype(str).tolist()
+                portfolio_df["股票代號"] = portfolio_df["股票代號"].astype(str)
+                existing_tickers = portfolio_df["股票代號"].tolist()
                 
-                # 只有「完全沒追蹤過的新股票」才加進來
-                new_to_add = virtual_entries[~virtual_entries["股票代號"].astype(str).isin(existing_tickers)]
+                # 篩選出「完全沒追蹤過的新股票」
+                new_to_add = virtual_entries[~virtual_entries["股票代號"].isin(existing_tickers)]
                 
                 if not new_to_add.empty:
-                    new_added_tickers = new_to_add["股票代號"].astype(str).tolist()
+                    new_added_tickers = new_to_add["股票代號"].tolist()
+                    # 完美的永續結合：保留所有舊的 portfolio_df，只在後面 append 新的標的
                     combined_portfolio = pd.concat([portfolio_df, new_to_add], ignore_index=True)
                     combined_portfolio.to_csv(VIRTUAL_PORTFOLIO_PATH, index=False, encoding="utf-8-sig")
             else:
-                new_added_tickers = virtual_entries["股票代號"].astype(str).tolist()
+                new_added_tickers = virtual_entries["股票代號"].tolist()
                 virtual_entries.to_csv(VIRTUAL_PORTFOLIO_PATH, index=False, encoding="utf-8-sig")
 
         # 3. 組合 Telegram 訊息
@@ -128,7 +130,7 @@ def run_picker():
                 f"   狀態: {item['量化訊號']}"
             )
         
-        # 4. 計算即時績效與整體損益
+        # 4. 計算即時績效與整體損益（讀取永續風控艙）
         if os.path.exists(VIRTUAL_PORTFOLIO_PATH):
             portfolio_df = pd.read_csv(VIRTUAL_PORTFOLIO_PATH, encoding="utf-8-sig")
             if not portfolio_df.empty:
@@ -142,8 +144,8 @@ def run_picker():
 
                 for _, row in portfolio_df.iterrows():
                     code = str(row["股票代號"])
-                    buy_date = row["買進日期"]  # 這裡會正確抓取當初第一次進場的日期！
-                    buy_cost = float(row["買進成本"])  # 這裡會正確抓取當初第一次進場的成本！
+                    buy_date = str(row["買進日期"])
+                    buy_cost = float(row["買進成本"])
                     
                     try:
                         temp_df = yf.download(f"{code}.TW", period="5d", progress=False)
@@ -158,7 +160,7 @@ def run_picker():
                             total_market_value += current_price * 1000
                             item_count += 1
                             
-                            # 修正勝率定義：只要報酬率 >= 0（平盤或獲利）都計入勝率
+                            # 勝率定義：ROI >= 0（平盤或獲利皆計入勝率）
                             if roi >= 0:
                                 win_count += 1
                             
@@ -190,7 +192,7 @@ def run_picker():
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", 
                       json={"chat_id": TELEGRAM_CHAT_ID, "text": full_msg})
 
-        return jsonify({"status": "success", "message": "分析完成，風控邏輯已修正。"}), 200
+        return jsonify({"status": "success", "message": "分析完成，風控艙永續追蹤防護已生效。"}), 200
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
