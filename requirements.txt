@@ -1,6 +1,7 @@
+Flask
 pandas
 yfinance
-python-telegram-bot
 requests
 python-dotenv
-gunicorn
+SQLAlchemy
+psycopg2-binary
